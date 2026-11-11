@@ -610,6 +610,7 @@ export default function Home() {
     }
   }
 
+  // Run PaddleOCR first, then Tesseract.
   async function runComparison() {
     if (!file) {
       setGeneralError("Please upload or capture an image first.");
@@ -626,26 +627,28 @@ export default function Home() {
     setPaddleError(null);
     setTesseractError(null);
 
+    // STEP 1: PaddleOCR runs first.
     setPaddleLoading(true);
+    setTesseractLoading(false);
+
+    await runEngine(
+      "/api/ocr/paddle",
+      file,
+      setPaddleLoading,
+      setPaddleResult,
+      setPaddleError
+    );
+
+    // STEP 2: Tesseract starts after PaddleOCR finishes.
     setTesseractLoading(true);
 
-    // Both engines receive the same image and preprocessing settings.
-    await Promise.all([
-      runEngine(
-        "/api/ocr/paddle",
-        file,
-        setPaddleLoading,
-        setPaddleResult,
-        setPaddleError
-      ),
-      runEngine(
-        "/api/ocr/tesseract",
-        file,
-        setTesseractLoading,
-        setTesseractResult,
-        setTesseractError
-      ),
-    ]);
+    await runEngine(
+      "/api/ocr/tesseract",
+      file,
+      setTesseractLoading,
+      setTesseractResult,
+      setTesseractError
+    );
   }
 
   // Save the original image and both OCR results to Supabase.
@@ -797,47 +800,45 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
-      
-    <header className="border-b border-slate-200 bg-white">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold text-white">
-            O
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold text-white">
+              O
+            </div>
+
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">
+                OCR Comparison
+              </h1>
+              <p className="text-xs text-slate-500">
+                PaddleOCR vs. Tesseract
+              </p>
+            </div>
           </div>
 
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">
-              OCR Comparison
-            </h1>
-            <p className="text-xs text-slate-500">
-              PaddleOCR vs. Tesseract
-            </p>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 sm:inline-flex">
+              Comparison Workspace
+            </span>
+
+            <Link
+              href="/history"
+              className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 sm:px-4"
+            >
+              History
+            </Link>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50 sm:px-4"
+            >
+              Log out
+            </button>
           </div>
         </div>
-
-        <div className="flex items-center gap-2 sm:gap-3">
-          <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 sm:inline-flex">
-            Comparison Workspace
-          </span>
-
-          <Link
-            href="/history"
-            className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 sm:px-4"
-          >
-            History
-          </Link>
-
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50 sm:px-4"
-          >
-            Log out
-          </button>
-        </div>
-      </div>
-    </header>
-
+      </header>
 
       <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <section>
@@ -1131,8 +1132,8 @@ export default function Home() {
               </h3>
 
               <p className="mt-1 text-xs text-slate-500">
-                Both engines will process the same image using the selected
-                configuration.
+                PaddleOCR will process the image first, followed by Tesseract,
+                using the selected configuration.
               </p>
             </div>
 
