@@ -132,27 +132,20 @@ function Metric({
 
 function ResultPanel({
   title,
-  color,
   result,
   loading,
   error,
 }: {
   title: string;
-  color: "blue" | "violet";
   result: OCRResponse | null;
   loading: boolean;
   error: string | null;
 }) {
   const [showLines, setShowLines] = useState(false);
 
-  const accent =
-    color === "blue"
-      ? "border-blue-200 bg-blue-50 text-blue-700"
-      : "border-violet-200 bg-violet-50 text-violet-700";
-
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className={`flex items-center justify-between border-b p-4 ${accent}`}>
+      <div className="flex items-center justify-between border-b border-blue-200 bg-blue-50 p-4 text-blue-700">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wider opacity-70">
             OCR Engine
@@ -192,7 +185,7 @@ function ResultPanel({
 
         {!loading && !result && !error && (
           <div className="flex min-h-48 items-center justify-center text-center text-sm text-slate-400">
-            Results will appear here after comparison.
+            Results will appear here after processing.
           </div>
         )}
 
@@ -327,13 +320,9 @@ export default function Home() {
 
   const [paddleResult, setPaddleResult] =
     useState<OCRResponse | null>(null);
-  const [tesseractResult, setTesseractResult] =
-    useState<OCRResponse | null>(null);
 
   const [paddleLoading, setPaddleLoading] = useState(false);
-  const [tesseractLoading, setTesseractLoading] = useState(false);
   const [paddleError, setPaddleError] = useState<string | null>(null);
-  const [tesseractError, setTesseractError] = useState<string | null>(null);
   const [generalError, setGeneralError] = useState("");
 
   // Experiment saving states
@@ -410,9 +399,7 @@ export default function Home() {
 
     setFile(selected);
     setPaddleResult(null);
-    setTesseractResult(null);
     setPaddleError(null);
-    setTesseractError(null);
   }
 
   // Open the laptop webcam.
@@ -556,7 +543,7 @@ export default function Home() {
     setActivePreset("No preprocessing");
   }
 
-  // Run one OCR engine and return its response for comparison saving.
+  // Run PaddleOCR and return its response for experiment saving.
   async function runEngine(
     endpoint: string,
     selectedFile: File,
@@ -610,8 +597,8 @@ export default function Home() {
     }
   }
 
-  // Run PaddleOCR first, then Tesseract.
-  async function runComparison() {
+  // Run PaddleOCR.
+  async function runPaddleOCR() {
     if (!file) {
       setGeneralError("Please upload or capture an image first.");
       return;
@@ -623,13 +610,7 @@ export default function Home() {
     setExperimentSaved(false);
 
     setPaddleResult(null);
-    setTesseractResult(null);
     setPaddleError(null);
-    setTesseractError(null);
-
-    // STEP 1: PaddleOCR runs first.
-    setPaddleLoading(true);
-    setTesseractLoading(false);
 
     await runEngine(
       "/api/ocr/paddle",
@@ -638,24 +619,13 @@ export default function Home() {
       setPaddleResult,
       setPaddleError
     );
-
-    // STEP 2: Tesseract starts after PaddleOCR finishes.
-    setTesseractLoading(true);
-
-    await runEngine(
-      "/api/ocr/tesseract",
-      file,
-      setTesseractLoading,
-      setTesseractResult,
-      setTesseractError
-    );
   }
 
-  // Save the original image and both OCR results to Supabase.
+  // Save the original image and PaddleOCR result to Supabase.
   async function saveExperiment() {
-    if (!file || !paddleResult || !tesseractResult) {
+    if (!file || !paddleResult) {
       setSaveError(
-        "Both OCR results and the original image are required."
+        "A PaddleOCR result and the original image are required."
       );
       return;
     }
@@ -706,7 +676,7 @@ export default function Home() {
         );
       }
 
-      // Save the comparison results to the experiments table.
+      // Save the PaddleOCR result to the experiments table.
       const { error: insertError } = await supabase
         .from("experiments")
         .insert({
@@ -719,7 +689,6 @@ export default function Home() {
           },
 
           paddleocr_result: paddleResult,
-          tesseract_result: tesseractResult,
 
           ground_truth: null,
 
@@ -733,17 +702,6 @@ export default function Home() {
                 paddleResult.confidence_summary.flagged_lines,
               processing_time_ms:
                 paddleResult.processing_time_ms,
-            },
-
-            tesseract: {
-              average_confidence:
-                tesseractResult.confidence_summary.average,
-              total_lines:
-                tesseractResult.confidence_summary.total_lines,
-              flagged_lines:
-                tesseractResult.confidence_summary.flagged_lines,
-              processing_time_ms:
-                tesseractResult.processing_time_ms,
             },
           },
 
@@ -774,7 +732,7 @@ export default function Home() {
 
       setExperimentSaved(true);
       setSaveMessage(
-        "Comparison saved to experiment history."
+        "PaddleOCR result saved to experiment history."
       );
     } catch (error) {
       setSaveError(
@@ -787,16 +745,8 @@ export default function Home() {
     }
   }
 
-  const bothComplete =
-    !paddleLoading &&
-    !tesseractLoading &&
-    (paddleResult !== null || tesseractResult !== null);
-
-  const bothSucceeded =
-    !paddleLoading &&
-    !tesseractLoading &&
-    paddleResult !== null &&
-    tesseractResult !== null;
+  const paddleComplete =
+    !paddleLoading && paddleResult !== null;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -809,17 +759,17 @@ export default function Home() {
 
             <div>
               <h1 className="text-xl font-bold tracking-tight">
-                OCR Comparison
+                PaddleOCR Workspace
               </h1>
               <p className="text-xs text-slate-500">
-                PaddleOCR vs. Tesseract
+                PaddleOCR Text Recognition
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
             <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 sm:inline-flex">
-              Comparison Workspace
+              OCR Workspace
             </span>
 
             <Link
@@ -847,13 +797,13 @@ export default function Home() {
           </p>
 
           <h2 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
-            Compare OCR Results
+            PaddleOCR Text Recognition
           </h2>
 
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-            Upload the same image for both OCR engines, configure image
-            preprocessing, and compare their extracted text, confidence,
-            flagged lines, and processing times.
+            Upload an image or capture a photo, configure image
+            preprocessing, and examine PaddleOCR's extracted text,
+            confidence scores, flagged lines, and processing times.
           </p>
         </section>
 
@@ -963,9 +913,7 @@ export default function Home() {
                   onClick={() => {
                     setFile(null);
                     setPaddleResult(null);
-                    setTesseractResult(null);
                     setPaddleError(null);
-                    setTesseractError(null);
                     setGeneralError("");
                     setExperimentSaved(false);
                     setSaveMessage("");
@@ -1123,29 +1071,28 @@ export default function Home() {
           </div>
         </section>
 
-        {/* RUN COMPARISON */}
+        {/* RUN PADDLEOCR */}
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="font-bold text-slate-900">
-                4. Run OCR Comparison
+                4. Run PaddleOCR
               </h3>
 
               <p className="mt-1 text-xs text-slate-500">
-                PaddleOCR will process the image first, followed by Tesseract,
-                using the selected configuration.
+                PaddleOCR will process the image using the selected configuration.
               </p>
             </div>
 
             <button
               type="button"
-              disabled={!file || paddleLoading || tesseractLoading || cameraOpen}
-              onClick={runComparison}
+              disabled={!file || paddleLoading || cameraOpen}
+              onClick={runPaddleOCR}
               className="rounded-xl bg-blue-600 px-7 py-3.5 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {paddleLoading || tesseractLoading
-                ? "Running Comparison..."
-                : "Run Comparison →"}
+              {paddleLoading
+                ? "Running PaddleOCR..."
+                : "Run PaddleOCR →"}
             </button>
           </div>
 
@@ -1156,7 +1103,7 @@ export default function Home() {
           )}
 
           {/* SAVE EXPERIMENT */}
-          {bothSucceeded && (
+          {paddleComplete && (
             <div className="mt-5 border-t border-slate-200 pt-5">
               <button
                 type="button"
@@ -1191,42 +1138,33 @@ export default function Home() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-xl font-bold text-slate-900">
-                Comparison Results
+                PaddleOCR Results
               </h3>
 
               <p className="mt-1 text-xs text-slate-500">
-                Results from the two OCR engines.
+                Text recognition results from PaddleOCR.
               </p>
             </div>
 
-            {bothComplete && (
+            {paddleComplete && (
               <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-                Test completed
+                Processing completed
               </span>
             )}
           </div>
 
-          <div className="grid items-start gap-5 lg:grid-cols-2">
+          <div className="grid items-start gap-5">
             <ResultPanel
               title="PaddleOCR"
-              color="blue"
               result={paddleResult}
               loading={paddleLoading}
               error={paddleError}
-            />
-
-            <ResultPanel
-              title="Tesseract"
-              color="violet"
-              result={tesseractResult}
-              loading={tesseractLoading}
-              error={tesseractError}
             />
           </div>
         </section>
 
         <footer className="pb-6 pt-2 text-center text-xs text-slate-400">
-          OCR Comparison Workspace · PaddleOCR and Tesseract testing
+          OCR Workspace · Powered by PaddleOCR
         </footer>
       </div>
     </main>
