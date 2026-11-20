@@ -11,15 +11,12 @@ type Experiment = {
   filename: string;
   settings: Record<string, unknown> | null;
   paddleocr_result: Record<string, unknown> | null;
-  tesseract_result: Record<string, unknown> | null;
   ground_truth: string | null;
   metrics: Record<string, unknown> | null;
   storage_path: string | null;
   mime_type: string | null;
   file_size: number | null;
 };
-
-type EngineKey = "paddleocr" | "tesseract";
 
 type AccuracyMetrics = {
   cer: number;
@@ -32,9 +29,42 @@ type AccuracyMetrics = {
   werAccuracy: number;
 };
 
+type FieldEvaluation = {
+  total: number;
+  correct: number;
+  incorrect: number;
+  missing: number;
+  unverifiable: number;
+  accuracy: number | null;
+  coverage: number;
+  correctPercentage?: number;
+  incorrectPercentage?: number;
+  missingPercentage?: number;
+  unverifiablePercentage?: number;
+  details: {
+    id: string;
+    section: string;
+    label: string;
+    expected: string;
+    actual: string;
+    status: "correct" | "incorrect" | "missing" | "unverifiable";
+  }[];
+};
+
 function getNumber(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function getFieldPercentage(
+  evaluation: FieldEvaluation,
+  status: "correct" | "incorrect" | "missing" | "unverifiable"
+): number {
+  if (evaluation.total <= 0) return 0;
+
+  const count = evaluation[status];
+
+  return (count / evaluation.total) * 100;
 }
 
 function getObject(value: unknown): Record<string, unknown> {
@@ -46,18 +76,17 @@ function getObject(value: unknown): Record<string, unknown> {
 }
 
 function getSavedAccuracy(
-  experiment: Experiment,
-  engine: EngineKey
+  experiment: Experiment
 ): AccuracyMetrics | null {
   if (!experiment.ground_truth?.trim()) {
     return null;
   }
 
-  const engineMetrics = getObject(
-    getObject(experiment.metrics)[engine]
+  const paddleMetrics = getObject(
+    getObject(experiment.metrics).paddleocr
   );
 
-  const evaluation = getObject(engineMetrics.evaluation);
+  const evaluation = getObject(paddleMetrics.evaluation);
 
   const requiredFields = [
     "cer",
@@ -91,6 +120,23 @@ function getSavedAccuracy(
     cerAccuracy: getNumber(evaluation.cerAccuracy),
     werAccuracy: getNumber(evaluation.werAccuracy),
   };
+}
+
+function getSavedFieldEvaluation(
+  experiment: Experiment,
+  evaluationType: "field_evaluation" | "structured_field_evaluation"
+): FieldEvaluation | null {
+  const paddleMetrics = getObject(
+    getObject(experiment.metrics).paddleocr
+  );
+
+  const evaluation = getObject(paddleMetrics[evaluationType]);
+
+  if (!Array.isArray(evaluation.details)) {
+    return null;
+  }
+
+  return evaluation as unknown as FieldEvaluation;
 }
 
 function formatDate(value: string) {
@@ -134,13 +180,12 @@ function getPreset(experiment: Experiment) {
     : "No preprocessing";
 }
 
-function getEngineData(experiment: Experiment, engine: EngineKey) {
-  const result =
-    engine === "paddleocr"
-      ? getObject(experiment.paddleocr_result)
-      : getObject(experiment.tesseract_result);
+function getEngineData(experiment: Experiment) {
+  const result = getObject(experiment.paddleocr_result);
+  const metrics = getObject(
+    getObject(experiment.metrics).paddleocr
+  );
 
-  const metrics = getObject(getObject(experiment.metrics)[engine]);
   const confidence = getObject(result.confidence_summary);
   const processing = getObject(result.processing_time_ms);
 
@@ -172,13 +217,6 @@ function getEngineData(experiment: Experiment, engine: EngineKey) {
   };
 }
 
-function getEngineAccuracy(
-  experiment: Experiment,
-  engine: EngineKey
-) {
-  return getSavedAccuracy(experiment, engine);
-}
-
 function Metric({
   label,
   value,
@@ -201,47 +239,28 @@ function Metric({
 function AccuracyCard({
   title,
   accuracy,
-  color,
 }: {
   title: string;
   accuracy: AccuracyMetrics | null;
-  color: "blue" | "violet";
 }) {
-  const accent =
-    color === "blue"
-      ? "border-blue-200 bg-blue-50"
-      : "border-violet-200 bg-violet-50";
-
-  const heading =
-    color === "blue" ? "text-blue-800" : "text-violet-800";
-
   if (!accuracy) {
     return (
-      <div className={`rounded-xl border p-4 ${accent}`}>
-        <h4 className={`font-bold ${heading}`}>{title}</h4>
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+        <h4 className="font-bold text-blue-800">{title}</h4>
         <p className="mt-2 text-sm text-slate-500">
-          Accuracy unavailable. Save Ground Truth to generate and store
-          the evaluation metrics.
+          Accuracy unavailable. Save Ground Truth to generate the evaluation.
         </p>
       </div>
     );
   }
 
   return (
-    <div className={`rounded-xl border p-4 ${accent}`}>
-      <h4 className={`font-bold ${heading}`}>{title}</h4>
+    <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+      <h4 className="font-bold text-blue-800">{title}</h4>
 
       <div className="mt-3 grid grid-cols-2 gap-3">
-        <Metric
-          label="CER"
-          value={accuracy.cer.toFixed(2)}
-          suffix="%"
-        />
-        <Metric
-          label="WER"
-          value={accuracy.wer.toFixed(2)}
-          suffix="%"
-        />
+        <Metric label="CER" value={accuracy.cer.toFixed(2)} suffix="%" />
+        <Metric label="WER" value={accuracy.wer.toFixed(2)} suffix="%" />
         <Metric
           label="Character accuracy"
           value={accuracy.cerAccuracy.toFixed(2)}
@@ -256,8 +275,7 @@ function AccuracyCard({
 
       <div className="mt-3 space-y-1 text-xs text-slate-600">
         <p>
-          Character errors: {accuracy.characterErrors} /{" "}
-          {accuracy.characterCount}
+          Character errors: {accuracy.characterErrors} / {accuracy.characterCount}
         </p>
         <p>
           Word errors: {accuracy.wordErrors} / {accuracy.wordCount}
@@ -267,15 +285,146 @@ function AccuracyCard({
   );
 }
 
-function EngineDetails({
+function FieldAccuracyCard({
   title,
-  result,
-  color,
-  accuracy,
+  evaluation,
 }: {
   title: string;
+  evaluation: FieldEvaluation | null;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+
+  if (!evaluation) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <h4 className="font-bold text-slate-800">{title}</h4>
+        <p className="mt-2 text-sm text-slate-500">
+          No field evaluation available. Save Ground Truth to generate it.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <h4 className="font-bold text-slate-800">{title}</h4>
+
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Metric
+          label="Field accuracy"
+          value={
+            evaluation.accuracy === null
+              ? "N/A"
+              : evaluation.accuracy.toFixed(2)
+          }
+          suffix={evaluation.accuracy === null ? "" : "%"}
+        />
+
+        <Metric
+          label="Correct"
+          value={`${evaluation.correct} (${getFieldPercentage(evaluation, "correct").toFixed(2)}%)`}
+        />
+
+        <Metric
+          label="Incorrect"
+          value={`${evaluation.incorrect} (${getFieldPercentage(evaluation, "incorrect").toFixed(2)}%)`}
+        />
+
+        <Metric
+          label="Missing"
+          value={`${evaluation.missing} (${getFieldPercentage(evaluation, "missing").toFixed(2)}%)`}
+        />
+
+        <Metric
+          label="Unverifiable"
+          value={`${evaluation.unverifiable} (${getFieldPercentage(evaluation, "unverifiable").toFixed(2)}%)`}
+        />
+
+        <Metric
+          label="Evaluation coverage"
+          value={evaluation.coverage.toFixed(2)}
+          suffix="%"
+        />
+      </div>
+
+      <p className="mt-3 text-xs leading-5 text-slate-500">
+        {evaluation.total} nonblank Ground Truth fields evaluated.
+        Percentages are calculated from all evaluated fields, including
+        unverifiable fields. Unverifiable fields are excluded from
+        Field Accuracy.
+      </p>
+
+      <button
+        type="button"
+        onClick={() => setShowDetails(!showDetails)}
+        className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+      >
+        {showDetails ? "Hide field details" : "View field details"}
+      </button>
+
+      {showDetails && (
+        <div className="mt-4 max-h-96 space-y-3 overflow-auto">
+          {evaluation.details.map((field, index) => (
+            <div
+              key={`${field.id}-${index}`}
+              className="rounded-lg border border-slate-200 p-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-slate-800">
+                  {field.label}
+                </p>
+
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    field.status === "correct"
+                      ? "bg-emerald-100 text-emerald-700"
+                      : field.status === "incorrect"
+                        ? "bg-red-100 text-red-700"
+                        : field.status === "missing"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  {field.status}
+                </span>
+              </div>
+
+              <p className="mt-1 text-xs text-slate-400">
+                {field.section} · {field.id}
+              </p>
+
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-500">
+                    Ground Truth
+                  </p>
+                  <p className="break-words text-sm text-slate-700">
+                    {field.expected || "—"}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-slate-500">
+                    PaddleOCR
+                  </p>
+                  <p className="break-words text-sm text-slate-700">
+                    {field.actual || "—"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EngineDetails({
+  result,
+  accuracy,
+}: {
   result: Record<string, unknown> | null;
-  color: "blue" | "violet";
   accuracy: AccuracyMetrics | null;
 }) {
   const confidence = getObject(result?.confidence_summary);
@@ -283,18 +432,13 @@ function EngineDetails({
   const extractedText =
     typeof result?.text === "string" ? result.text : "";
 
-  const accent =
-    color === "blue"
-      ? "border-blue-200 bg-blue-50 text-blue-700"
-      : "border-violet-200 bg-violet-50 text-violet-700";
-
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <div className={`border-b p-4 ${accent}`}>
+      <div className="border-b border-blue-200 bg-blue-50 p-4 text-blue-700">
         <p className="text-xs font-semibold uppercase tracking-wider opacity-70">
           OCR Engine
         </p>
-        <h3 className="text-lg font-bold">{title}</h3>
+        <h3 className="text-lg font-bold">PaddleOCR</h3>
       </div>
 
       <div className="space-y-4 p-4">
@@ -341,9 +485,8 @@ function EngineDetails({
               </h4>
 
               <AccuracyCard
-                title={`${title} Accuracy`}
+                title="PaddleOCR CER and WER"
                 accuracy={accuracy}
-                color={color}
               />
             </div>
 
@@ -364,33 +507,23 @@ function EngineDetails({
 }
 
 function ComparisonEngine({
-  title,
-  engine,
   first,
   second,
-  color,
 }: {
-  title: string;
-  engine: EngineKey;
   first: Experiment;
   second: Experiment;
-  color: "blue" | "violet";
 }) {
-  const firstData = getEngineData(first, engine);
-  const secondData = getEngineData(second, engine);
+  const firstData = getEngineData(first);
+  const secondData = getEngineData(second);
 
-  const firstAccuracy = getEngineAccuracy(first, engine);
-  const secondAccuracy = getEngineAccuracy(second, engine);
+  const firstAccuracy = getSavedAccuracy(first);
+  const secondAccuracy = getSavedAccuracy(second);
 
   const accuracyRows = [
     {
       label: "CER",
-      first: firstAccuracy
-        ? `${firstAccuracy.cer.toFixed(2)}%`
-        : "N/A",
-      second: secondAccuracy
-        ? `${secondAccuracy.cer.toFixed(2)}%`
-        : "N/A",
+      first: firstAccuracy ? `${firstAccuracy.cer.toFixed(2)}%` : "N/A",
+      second: secondAccuracy ? `${secondAccuracy.cer.toFixed(2)}%` : "N/A",
       difference:
         firstAccuracy && secondAccuracy
           ? `${(secondAccuracy.cer - firstAccuracy.cer).toFixed(2)} percentage points`
@@ -398,12 +531,8 @@ function ComparisonEngine({
     },
     {
       label: "WER",
-      first: firstAccuracy
-        ? `${firstAccuracy.wer.toFixed(2)}%`
-        : "N/A",
-      second: secondAccuracy
-        ? `${secondAccuracy.wer.toFixed(2)}%`
-        : "N/A",
+      first: firstAccuracy ? `${firstAccuracy.wer.toFixed(2)}%` : "N/A",
+      second: secondAccuracy ? `${secondAccuracy.wer.toFixed(2)}%` : "N/A",
       difference:
         firstAccuracy && secondAccuracy
           ? `${(secondAccuracy.wer - firstAccuracy.wer).toFixed(2)} percentage points`
@@ -484,18 +613,13 @@ function ComparisonEngine({
     },
   ];
 
-  const accent =
-    color === "blue"
-      ? "border-blue-200 bg-blue-50 text-blue-800"
-      : "border-violet-200 bg-violet-50 text-violet-800";
-
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <div className={`border-b p-4 ${accent}`}>
+      <div className="border-b border-blue-200 bg-blue-50 p-4 text-blue-800">
         <p className="text-xs font-semibold uppercase tracking-wider opacity-70">
           Engine Comparison
         </p>
-        <h3 className="text-lg font-bold">{title}</h3>
+        <h3 className="text-lg font-bold">PaddleOCR</h3>
       </div>
 
       <div className="overflow-x-auto p-4">
@@ -798,11 +922,6 @@ export default function HistoryPage() {
       getObject(experiment.metrics?.paddleocr).average_confidence
     );
 
-  const tesseractConfidence = (experiment: Experiment) =>
-    getNumber(
-      getObject(experiment.metrics?.tesseract).average_confidence
-    );
-
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
@@ -842,8 +961,8 @@ export default function HistoryPage() {
           </h2>
 
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-            Browse saved OCR comparisons, review preprocessing
-            configurations, and compare the results from both OCR engines.
+            Browse saved PaddleOCR experiments, review preprocessing
+            configurations, and compare OCR results.
           </p>
         </section>
 
@@ -940,7 +1059,7 @@ export default function HistoryPage() {
               <p className="mt-1 text-sm text-slate-500">
                 {search
                   ? "Try another search term."
-                  : "Your saved OCR comparisons will appear here."}
+                  : "Your saved PaddleOCR experiments will appear here."}
               </p>
             </div>
           ) : !error ? (
@@ -1003,22 +1122,13 @@ export default function HistoryPage() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 sm:min-w-56">
+                      <div className="sm:min-w-36">
                         <div className="rounded-lg bg-blue-50 p-3">
                           <p className="text-[10px] font-semibold text-blue-600">
                             PaddleOCR
                           </p>
                           <p className="mt-1 text-lg font-bold text-blue-800">
                             {paddleConfidence(experiment).toFixed(2)}%
-                          </p>
-                        </div>
-
-                        <div className="rounded-lg bg-violet-50 p-3">
-                          <p className="text-[10px] font-semibold text-violet-600">
-                            Tesseract
-                          </p>
-                          <p className="mt-1 text-lg font-bold text-violet-800">
-                            {tesseractConfidence(experiment).toFixed(2)}%
                           </p>
                         </div>
                       </div>
@@ -1052,7 +1162,7 @@ export default function HistoryPage() {
                   Experiment Comparison
                 </h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Compare the preprocessing configurations and OCR results.
+                  Compare PaddleOCR results using different preprocessing configurations.
                 </p>
               </div>
 
@@ -1115,27 +1225,15 @@ export default function HistoryPage() {
             </div>
 
             <ComparisonEngine
-              title="PaddleOCR"
-              engine="paddleocr"
               first={comparisonExperiments[0]}
               second={comparisonExperiments[1]}
-              color="blue"
-            />
-
-            <ComparisonEngine
-              title="Tesseract"
-              engine="tesseract"
-              first={comparisonExperiments[0]}
-              second={comparisonExperiments[1]}
-              color="violet"
             />
 
             <p className="text-xs leading-5 text-slate-400">
               Difference is calculated as Experiment B minus Experiment A.
               For CER and WER, a negative difference means Experiment B has
               fewer recognition errors. For accuracy, a positive difference
-              means Experiment B performs better. These metrics are compared
-              using each experiment&apos;s saved Ground Truth evaluation.
+              means Experiment B performs better.
             </p>
           </section>
         )}
@@ -1212,7 +1310,7 @@ export default function HistoryPage() {
                     <p className="mt-1 text-sm leading-6 text-slate-500">
                       Enter the manually verified, correct text from the
                       original document. This serves as the reference for
-                      evaluating both OCR engines.
+                      evaluating PaddleOCR.
                     </p>
                   </div>
 
@@ -1262,27 +1360,37 @@ export default function HistoryPage() {
                   <p className="text-xs font-bold uppercase tracking-wider text-blue-600">
                     Accuracy Evaluation · Step 2
                   </p>
+
                   <h4 className="mt-1 font-bold text-slate-900">
                     OCR Accuracy Results
                   </h4>
 
                   <p className="mt-1 text-sm leading-6 text-slate-500">
-                    Evaluation metrics are calculated and saved to the
-                    database when you save Ground Truth. The values shown
-                    here are retrieved from the saved experiment record.
+                    These metrics evaluate PaddleOCR against your manually
+                    verified Ground Truth. Full-document and structured-data
+                    field accuracy are calculated separately.
                   </p>
 
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div className="mt-4 space-y-4">
                     <AccuracyCard
-                      title="PaddleOCR"
-                      accuracy={getEngineAccuracy(selected, "paddleocr")}
-                      color="blue"
+                      title="PaddleOCR CER and WER"
+                      accuracy={getSavedAccuracy(selected)}
                     />
 
-                    <AccuracyCard
-                      title="Tesseract"
-                      accuracy={getEngineAccuracy(selected, "tesseract")}
-                      color="violet"
+                    <FieldAccuracyCard
+                      title="Full-document Field Accuracy"
+                      evaluation={getSavedFieldEvaluation(
+                        selected,
+                        "field_evaluation"
+                      )}
+                    />
+
+                    <FieldAccuracyCard
+                      title="Structured-data Field Accuracy"
+                      evaluation={getSavedFieldEvaluation(
+                        selected,
+                        "structured_field_evaluation"
+                      )}
                     />
                   </div>
 
@@ -1296,12 +1404,13 @@ export default function HistoryPage() {
                       word-level insertions, deletions, and substitutions.
                     </p>
                     <p className="mt-1">
-                      <strong>Accuracy:</strong> 100% minus the corresponding
-                      error rate, with displayed accuracy capped at 0%.
+                      <strong>Field accuracy:</strong> Correct fields divided
+                      by all scored fields. Blank Ground Truth fields are
+                      excluded, and unverifiable fields are not scored.
                     </p>
                     <p className="mt-1">
-                      Whitespace is normalized. Capitalization, punctuation,
-                      spelling, and numbers remain significant.
+                      <strong>Coverage:</strong> Scored fields divided by
+                      nonblank Ground Truth fields.
                     </p>
                   </div>
                 </section>
@@ -1375,21 +1484,10 @@ export default function HistoryPage() {
                     OCR Engine Results
                   </h4>
 
-                  <div className="grid items-start gap-4 lg:grid-cols-2">
-                    <EngineDetails
-                      title="PaddleOCR"
-                      color="blue"
-                      result={selected.paddleocr_result}
-                      accuracy={getEngineAccuracy(selected, "paddleocr")}
-                    />
-
-                    <EngineDetails
-                      title="Tesseract"
-                      color="violet"
-                      result={selected.tesseract_result}
-                      accuracy={getEngineAccuracy(selected, "tesseract")}
-                    />
-                  </div>
+                  <EngineDetails
+                    result={selected.paddleocr_result}
+                    accuracy={getSavedAccuracy(selected)}
+                  />
                 </section>
 
                 <p className="break-all text-[10px] text-slate-400">

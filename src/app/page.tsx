@@ -26,25 +26,45 @@ type OCRResponse = {
   engine: string;
   filename: string;
   text: string;
+
+  template_detection: {
+    template_id: string | null;
+    template_name: string | null;
+    detected: boolean;
+    method: "manual" | "automatic";
+  };
+
+  structured_data: {
+    template_id: string;
+    template_name: string;
+    structured_data: Record<string, unknown>;
+  } | null;
+
   confidence_summary: {
     average: number;
     total_lines: number;
     flagged_lines: number;
   };
+
   results: OCRResult[];
+
   preprocessing: {
     enabled: boolean;
     applied: string[];
     timings_ms: Record<string, number>;
     total_time_ms: number;
   };
+
   settings: Record<string, boolean>;
+
   processing_time_ms: {
     preprocessing: number;
     ocr: number;
     total: number;
   };
 };
+
+type StructuredRecord = Record<string, unknown>;
 
 const API_URL =
   process.env.NEXT_PUBLIC_OCR_API_URL || "http://127.0.0.1:8000";
@@ -110,6 +130,46 @@ const emptySettings: Record<Technique, boolean> = {
   adaptive_threshold: false,
 };
 
+function isRecord(value: unknown): value is StructuredRecord {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function formatLabel(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function hasContent(data: unknown): boolean {
+  if (data === null || data === undefined || data === "") {
+    return false;
+  }
+
+  if (Array.isArray(data)) {
+    return data.some(hasContent);
+  }
+
+  if (isRecord(data)) {
+    return Object.entries(data).some(
+      ([key, value]) =>
+        ![
+          "id",
+          "label",
+          "review_required",
+          "review_reason",
+          "confidence",
+          "confidence_level",
+        ].includes(key) && hasContent(value)
+    );
+  }
+
+  return true;
+}
+
 function Metric({
   label,
   value,
@@ -130,6 +190,191 @@ function Metric({
   );
 }
 
+function ReviewBadge({ required }: { required: boolean }) {
+  return (
+    <span
+      className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${
+        required
+          ? "bg-amber-100 text-amber-800"
+          : "bg-emerald-100 text-emerald-700"
+      }`}
+    >
+      {required ? "NEEDS REVIEW" : "OK"}
+    </span>
+  );
+}
+
+function StructuredItem({
+  label,
+  data,
+}: {
+  label: string;
+  data: unknown;
+}) {
+  if (Array.isArray(data)) {
+    return (
+      <div className="space-y-2">
+        {data.map((item, index) => (
+          <StructuredItem
+            key={index}
+            label={
+              isRecord(item) && typeof item.label === "string"
+                ? item.label
+                : `${label} ${index + 1}`
+            }
+            data={item}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (isRecord(data)) {
+    const response = data.response ?? data.value ?? data.result;
+
+    const hasResponse =
+      response !== undefined && response !== null;
+
+    const reviewRequired = data.review_required === true;
+
+    if (hasResponse) {
+      return (
+        <div
+          className={`rounded-lg border p-3 ${
+            reviewRequired
+              ? "border-amber-200 bg-amber-50"
+              : "border-slate-200 bg-white"
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-slate-800">
+              {typeof data.label === "string"
+                ? data.label
+                : formatLabel(label)}
+            </p>
+
+            <ReviewBadge required={reviewRequired} />
+          </div>
+
+          <p className="mt-2 text-sm font-medium text-slate-700">
+            {String(response)}
+          </p>
+
+          {typeof data.detected_options === "object" &&
+            data.detected_options !== null && (
+              <p className="mt-1 text-xs text-slate-500">
+                Detected options:{" "}
+                {Array.isArray(data.detected_options)
+                  ? data.detected_options.join(", ")
+                  : JSON.stringify(data.detected_options)}
+              </p>
+            )}
+
+          {typeof data.confidence === "number" && (
+            <p className="mt-1 text-xs text-slate-500">
+              Confidence: {data.confidence.toFixed(2)}%
+              {typeof data.confidence_level === "string"
+                ? ` · ${data.confidence_level}`
+                : ""}
+            </p>
+          )}
+
+          {typeof data.review_reason === "string" && (
+            <p className="mt-2 text-xs text-amber-800">
+              Review reason: {data.review_reason}
+            </p>
+          )}
+        </div>
+      );
+    }
+
+    const entries = Object.entries(data).filter(
+      ([key]) =>
+        ![
+          "id",
+          "label",
+          "review_required",
+          "review_reason",
+          "confidence",
+          "confidence_level",
+          "detected_options",
+        ].includes(key)
+    );
+
+    return (
+      <div className="space-y-2">
+        {entries.map(([key, value]) => (
+          <StructuredItem key={key} label={key} data={value} />
+        ))}
+      </div>
+    );
+  }
+
+  if (data === null || data === undefined || data === "") {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-3">
+      <span className="text-sm font-medium text-slate-700">
+        {formatLabel(label)}
+      </span>
+
+      <span className="text-sm text-slate-600">
+        {String(data)}
+      </span>
+    </div>
+  );
+}
+
+function StructuredSection({
+  title,
+  data,
+}: {
+  title: string;
+  data: unknown;
+}) {
+  if (
+    data === null ||
+    data === undefined ||
+    (Array.isArray(data) && data.length === 0)
+  ) {
+    return null;
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200">
+      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <h4 className="text-sm font-bold text-slate-800">
+          {title}
+        </h4>
+      </div>
+
+      <div className="space-y-2 p-3">
+        {Array.isArray(data) ? (
+          data.map((item, index) => (
+            <StructuredItem
+              key={index}
+              label={`${title} ${index + 1}`}
+              data={item}
+            />
+          ))
+        ) : isRecord(data) ? (
+          Object.entries(data).map(([key, value]) => (
+            <StructuredItem
+              key={key}
+              label={key}
+              data={value}
+            />
+          ))
+        ) : (
+          <StructuredItem label={title} data={data} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ResultPanel({
   title,
   result,
@@ -142,6 +387,35 @@ function ResultPanel({
   error: string | null;
 }) {
   const [showLines, setShowLines] = useState(false);
+  const [showRawJson, setShowRawJson] = useState(false);
+  const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
+
+  const sectionOrder = [
+    ["medical_history", "Medical History"],
+    ["family_history", "Family History"],
+    ["student_experiences", "Student Experiences"],
+    ["circumcision", "Circumcision"],
+    ["psychosocial_history", "Psychosocial History"],
+    ["for_girls", "For Girls"],
+  ] as const;
+
+  const sections = result?.structured_data?.structured_data ?? {};
+
+  const availableSections = sectionOrder.filter(([key]) =>
+    hasContent(sections[key])
+  );
+
+  const currentSection = availableSections[currentSectionIndex];
+
+  function goToPreviousSection() {
+    setCurrentSectionIndex((previous) => Math.max(0, previous - 1));
+  }
+
+  function goToNextSection() {
+    setCurrentSectionIndex((previous) =>
+      Math.min(availableSections.length - 1, previous + 1)
+    );
+  }
 
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -191,30 +465,215 @@ function ResultPanel({
 
         {result && !loading && (
           <>
+            {/* DOCUMENT TEMPLATE DETECTION */}
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h3 className="mb-3 text-sm font-bold text-slate-800">
+                Document Detection
+              </h3>
+
+              {result.template_detection.detected ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">
+                    TEMPLATE DETECTED
+                  </span>
+
+                  <span className="text-sm font-semibold text-slate-800">
+                    {result.template_detection.template_name}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+                    NO TEMPLATE DETECTED
+                  </span>
+
+                  <span className="text-sm text-slate-500">
+                    Regular OCR results only
+                  </span>
+                </div>
+              )}
+
+              <p className="mt-2 text-xs text-slate-500">
+                Detection method: {result.template_detection.method}
+              </p>
+            </div>
+
+            {/* STRUCTURED DATA PAGINATION */}
+            {result.structured_data && (
+              <div className="rounded-xl border border-slate-200 p-4">
+                <div className="mb-4">
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Structured Extraction
+                  </h3>
+
+                  <p className="mt-1 text-xs text-slate-500">
+                    {result.structured_data.template_name}
+                  </p>
+
+                  <p className="mt-2 text-xs text-slate-500">
+                    Browse the extracted information one section at a time.
+                  </p>
+                </div>
+
+                {availableSections.length > 0 ? (
+                  <>
+                    {/* PAGE INDICATOR */}
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-500">
+                        SECTION {currentSectionIndex + 1} OF{" "}
+                        {availableSections.length}
+                      </span>
+
+                      <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-bold text-blue-700">
+                        {Math.round(
+                          ((currentSectionIndex + 1) /
+                            availableSections.length) *
+                            100
+                        )}
+                        %
+                      </span>
+                    </div>
+
+                    {/* PAGINATION PROGRESS */}
+                    <div className="mb-4 flex gap-1.5">
+                      {availableSections.map(([key], index) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setCurrentSectionIndex(index)}
+                          aria-label={`Go to ${availableSections[index][1]}`}
+                          className={`h-1.5 flex-1 rounded-full transition ${
+                            index === currentSectionIndex
+                              ? "bg-blue-600"
+                              : index < currentSectionIndex
+                                ? "bg-blue-300"
+                                : "bg-slate-200"
+                          }`}
+                        />
+                      ))}
+                    </div>
+
+                    {/* CURRENT SECTION */}
+                    {currentSection && (
+                      <StructuredSection
+                        key={currentSection[0]}
+                        title={currentSection[1]}
+                        data={sections[currentSection[0]]}
+                      />
+                    )}
+
+                    {/* PREVIOUS AND NEXT BUTTONS */}
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={goToPreviousSection}
+                        disabled={currentSectionIndex === 0}
+                        className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <span>←</span>
+                        Previous
+                      </button>
+
+                      <span className="text-xs font-semibold text-slate-500">
+                        {currentSectionIndex + 1} /{" "}
+                        {availableSections.length}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={goToNextSection}
+                        disabled={
+                          currentSectionIndex ===
+                          availableSections.length - 1
+                        }
+                        className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      >
+                        Next
+                        <span>→</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">
+                    No structured information was extracted.
+                  </p>
+                )}
+
+                {/* REVIEW NOTE */}
+                <div className="mt-4 rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs leading-5 text-slate-600">
+                    <span className="font-semibold text-amber-700">
+                      NEEDS REVIEW:
+                    </span>{" "}
+                    Check flagged fields against the original document.
+                    An OK badge does not guarantee that the extracted
+                    value is correct.
+                  </p>
+                </div>
+
+                {/* RAW JSON TOGGLE */}
+                <div className="mt-4 border-t border-slate-200 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowRawJson(!showRawJson)}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    <span>
+                      {showRawJson ? "Hide Raw JSON" : "View Raw JSON"}
+                    </span>
+
+                    <span>{showRawJson ? "−" : "+"}</span>
+                  </button>
+
+                  {showRawJson && (
+                    <div className="mt-3">
+                      <p className="mb-2 text-xs text-slate-500">
+                        Original structured extraction response.
+                      </p>
+
+                      <pre className="max-h-[500px] overflow-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-900 p-4 font-mono text-xs leading-5 text-green-300">
+                        {JSON.stringify(
+                          result.structured_data,
+                          null,
+                          2
+                        )}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* OCR METRICS */}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               <Metric
                 label="Average confidence"
                 value={result.confidence_summary.average.toFixed(2)}
                 suffix="%"
               />
+
               <Metric
                 label="Detected lines"
                 value={result.confidence_summary.total_lines}
               />
+
               <Metric
                 label="Flagged lines"
                 value={result.confidence_summary.flagged_lines}
               />
+
               <Metric
                 label="Preprocessing"
                 value={result.processing_time_ms.preprocessing.toFixed(0)}
                 suffix=" ms"
               />
+
               <Metric
                 label="OCR time"
                 value={result.processing_time_ms.ocr.toFixed(0)}
                 suffix=" ms"
               />
+
               <Metric
                 label="Total time"
                 value={result.processing_time_ms.total.toFixed(0)}
@@ -222,11 +681,13 @@ function ResultPanel({
               />
             </div>
 
+            {/* EXTRACTED TEXT */}
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-bold text-slate-800">
                   Extracted Text
                 </h3>
+
                 <span className="text-xs text-slate-400">
                   {result.text.length} characters
                 </span>
@@ -237,13 +698,17 @@ function ResultPanel({
               </pre>
             </div>
 
+            {/* INDIVIDUAL DETECTED LINES */}
             <div className="rounded-xl border border-slate-200">
               <button
                 type="button"
                 onClick={() => setShowLines(!showLines)}
                 className="flex w-full items-center justify-between p-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
-                <span>Individual detected lines ({result.results.length})</span>
+                <span>
+                  Individual detected lines ({result.results.length})
+                </span>
+
                 <span>{showLines ? "−" : "+"}</span>
               </button>
 
@@ -315,6 +780,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [preprocessing, setPreprocessing] = useState(false);
+
   const [settings, setSettings] =
     useState<Record<Technique, boolean>>(emptySettings);
 

@@ -1,6 +1,10 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  evaluateDocumentFields,
+  evaluateStructuredFields,
+} from "@/lib/fieldEvaluation";
 
 type AccuracyMetrics = {
   cer: number;
@@ -107,17 +111,17 @@ function calculateAccuracy(
   };
 }
 
-function calculateEngineEvaluation(
+function calculatePaddleEvaluation(
   groundTruth: string,
   result: unknown
 ): AccuracyMetrics | null {
-  const engineResult = getObject(result);
+  const paddleResult = getObject(result);
 
-  if (typeof engineResult.text !== "string") {
+  if (typeof paddleResult.text !== "string") {
     return null;
   }
 
-  return calculateAccuracy(groundTruth, engineResult.text);
+  return calculateAccuracy(groundTruth, paddleResult.text);
 }
 
 export async function PATCH(
@@ -127,7 +131,6 @@ export async function PATCH(
   try {
     const supabase = await createClient();
 
-    // Verify the current Supabase session.
     const {
       data: { user },
       error: authError,
@@ -164,10 +167,10 @@ export async function PATCH(
 
     const groundTruth = body.groundTruth.trim();
 
-    // Retrieve the experiment and its existing metrics.
+    // Retrieve the experiment and its PaddleOCR result.
     const { data: experiment, error: fetchError } = await supabase
       .from("experiments")
-      .select("id, paddleocr_result, tesseract_result, metrics")
+      .select("id, paddleocr_result, metrics")
       .eq("id", id)
       .maybeSingle();
 
@@ -186,35 +189,40 @@ export async function PATCH(
     }
 
     const existingMetrics = getObject(experiment.metrics);
-
     const paddleMetrics = getObject(existingMetrics.paddleocr);
-    const tesseractMetrics = getObject(existingMetrics.tesseract);
 
-    // Calculate evaluation metrics for both OCR engines.
-    const paddleEvaluation = calculateEngineEvaluation(
+    // 1. Full-document CER and WER evaluation.
+    const paddleEvaluation = calculatePaddleEvaluation(
       groundTruth,
       experiment.paddleocr_result
     );
 
-    const tesseractEvaluation = calculateEngineEvaluation(
+    // 2. Full-document field-level evaluation.
+    const paddleResult = getObject(experiment.paddleocr_result);
+
+    const paddleFieldEvaluation =
+      typeof paddleResult.text === "string"
+        ? evaluateDocumentFields(groundTruth, paddleResult.text)
+        : null;
+
+    // 3. Direct structured-data field-level evaluation.
+    const structuredFieldEvaluation = evaluateStructuredFields(
       groundTruth,
-      experiment.tesseract_result
+      experiment.paddleocr_result
     );
 
-    // Preserve existing confidence and processing-time metrics.
+    // Preserve other existing metrics.
     const updatedMetrics = {
       ...existingMetrics,
       paddleocr: {
         ...paddleMetrics,
         evaluation: paddleEvaluation,
-      },
-      tesseract: {
-        ...tesseractMetrics,
-        evaluation: tesseractEvaluation,
+        field_evaluation: paddleFieldEvaluation,
+        structured_field_evaluation: structuredFieldEvaluation,
       },
     };
 
-    // Save Ground Truth and evaluation metrics to Supabase.
+    // Save Ground Truth and all evaluation results.
     const { data: updatedExperiment, error: updateError } =
       await supabase
         .from("experiments")
@@ -240,7 +248,6 @@ export async function PATCH(
       );
     }
 
-    // Return the fields expected by the History page.
     return NextResponse.json({
       success: true,
       message: "Ground Truth and evaluation metrics saved.",
